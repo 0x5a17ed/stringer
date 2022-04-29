@@ -150,11 +150,13 @@ func main() {
 	g.Printf("\n")
 	g.Printf("package %s", g.pkg.name)
 	g.Printf("\n")
-	g.Printf("import \"strconv\"\n") // Used by all methods.
-
+	g.Printf("import (\n")
+	g.Printf("	\"strconv\"\n")
 	if g.bitFlags {
-		g.Printf("import \"strings\"\n")
+		g.Printf("	\"strings\"\n")
+		g.Printf("	\"math/bits\"\n")
 	}
+	g.Printf(")\n\n")
 
 	// Run generate for each type.
 	for _, typeName := range types {
@@ -644,11 +646,7 @@ func (g *Generator) buildMultipleRunsBitflags(runs [][]Value, typeName string) {
 	}
 	g.Printf("default:\n")
 
-	g.Printf("	var bits int\n")
-	g.Printf("	for n := i; n != 0; n &= (n - 1) {\n")
-	g.Printf("		bits++\n")
-	g.Printf("	}\n")
-	g.Printf("	out := make([]string, 0, bits)\n\n")
+	g.Printf("	out := make([]string, 0, bits.OnesCount64(uint64(i)))\n\n")
 
 	for i, values := range runs {
 		if len(values) == 1 {
@@ -765,12 +763,7 @@ const stringMap = `func (i %[1]s) String() string {
 
 // Argument to format is the type name.
 const stringMapBitflags = `func (i %[1]s) String() string {
-	var bits int
-	for n := i; n != 0; n &= (n - 1) {
-		bits++
-	}
-
-	out := make([]string, 0, bits)
+	out := make([]string, 0, bits.OnesCount64(uint64(i)))
 	for k, v := range _%[1]s_map {
 		if k&i != 0 {
 			out = append(out, v)
