@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"gotest.tools/v3/golden"
 )
 
@@ -18,6 +17,11 @@ func TestGolden(t *testing.T) {
 		bitFlags    bool
 	}{
 		{name: "day", bitFlags: true},
+		{name: "gap", bitFlags: true},
+		{name: "zero", bitFlags: true},
+		{name: "compound", bitFlags: true},
+		{name: "multirun", bitFlags: true},
+		{name: "trimmed", bitFlags: true, trimPrefix: "Trimmed"},
 	}
 
 	dir := t.TempDir()
@@ -31,11 +35,11 @@ func TestGolden(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			g := Generator{
-				bitFlags: tc.bitFlags,
+			g := Generator{}
+			if err := g.parsePackage([]string{absFile}, nil); err != nil {
+				t.Fatal(err)
 			}
-			g.parsePackage([]string{absFile}, nil)
-			if g.pkg == nil {
+			if g.pkgs == nil {
 				t.Fatalf("got 0 parsed packages but expected 1")
 			}
 
@@ -46,11 +50,15 @@ func TestGolden(t *testing.T) {
 			}
 
 			g.parsePackage([]string{absFile}, nil)
-			g.generateStart()
-			g.generate(tokens[3])
+			g.generateStart(tc.bitFlags)
+			k := Enum
+			if tc.bitFlags {
+				k = Flag
+			}
+			g.generate(tokens[3], k, tc.trimPrefix, tc.lineComment)
 			got := string(g.format())
 
-			assert.Equal(t, string(golden.Get(t, tc.name+".out.go")), got)
+			golden.Assert(t, got, tc.name+".out.go")
 		})
 	}
 }

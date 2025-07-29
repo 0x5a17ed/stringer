@@ -70,52 +70,104 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
-// isDirectory reports whether the named file is a directory.
-func isDirectory(name string) bool {
-	info, err := os.Stat(name)
-	if err != nil {
-		log.Fatal(err)
+type typeOptions struct {
+	kind        Kind
+	name        string
+	trimPrefix  string
+	lineComment bool
+}
+
+func parseOption(kind Kind, inp string) (*typeOptions, error) {
+	name, options, _ := strings.Cut(inp, "=")
+
+	out := &typeOptions{
+		kind: kind,
+		name: name,
 	}
-	return info.IsDir()
+
+	if options != "" {
+		for _, opt := range strings.Split(options, ";") {
+			k, v, _ := strings.Cut(opt, ":")
+
+			switch k {
+			case "lineComment":
+				out.lineComment = true
+			case "trimPrefix":
+				out.trimPrefix = v
+			case "trimType":
+				out.trimPrefix = name
+			default:
+				return nil, fmt.Errorf("unknown option %q", k)
+			}
+		}
+
+	}
+
+	return out, nil
 }
 
 var (
-	typeNames   = flag.String("type", "", "comma-separated list of type names; must be set")
 	output      = flag.String("output", "", "output file name; default srcdir/<type>_string.go")
-	trimPrefix  = flag.String("trimPrefix", "", "trim the `prefix` from the generated constant names")
+	trimPrefix  = flag.Bool("trimPrefix", false, "trim the type name `prefix` from the generated constant names")
 	lineComment = flag.Bool("lineComment", false, "use line comment text as printed text when present")
 	buildTags   = flag.String("tags", "", "comma-separated list of build tags to apply")
-	bitFlags    = flag.Bool("flags", false, "treat types as bit flag sets")
+
+	enumTypesStrFlag = flag.String("enums", "", "comma-separated list of enum types")
+	flagTypesStrFlag = flag.String("flags", "", "comma-separated list of flag types")
 )
 
 // Usage is a replacement usage function for the flags package.
 func Usage() {
-	fmt.Fprintf(os.Stderr, "Usage of stringer:\n")
-	fmt.Fprintf(os.Stderr, "\tstringer [flags] -type T [directory]\n")
-	fmt.Fprintf(os.Stderr, "\tstringer [flags] -type T files... # Must be a single package\n")
-	fmt.Fprintf(os.Stderr, "For more information, see:\n")
-	fmt.Fprintf(os.Stderr, "\thttps://pkg.go.dev/golang.org/x/tools/cmd/stringer\n")
-	fmt.Fprintf(os.Stderr, "Flags:\n")
+	_, _ = fmt.Fprintf(os.Stderr, `usage:
+	stringer [flags] [directory]
+	stringer [flags] files...
+
+flags:
+`)
 	flag.PrintDefaults()
 }
 
-func main() {
+func run() error {
 	log.SetFlags(0)
 	log.SetPrefix("stringer: ")
 	flag.Usage = Usage
 	flag.Parse()
-	if len(*typeNames) == 0 {
+
+	outputName := *output
+	if outputName == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	types := strings.Split(*typeNames, ",")
+
+	var hasFlags bool
+	var types []typeOptions
+	for _, inp := range strings.Split(*enumTypesStrFlag, ",") {
+		typeOpt, err := parseOption(Enum, inp)
+		if err != nil {
+			return err
+		}
+		types = append(types, *typeOpt)
+	}
+	for _, inp := range strings.Split(*flagTypesStrFlag, ",") {
+		typeOpt, err := parseOption(Flag, inp)
+		if err != nil {
+			return err
+		}
+		types = append(types, *typeOpt)
+
+		hasFlags = true
+	}
+
+	if len(types) == 0 {
+		flag.Usage()
+		os.Exit(2)
+	}
+
 	var tags []string
 	if len(*buildTags) > 0 {
 		tags = strings.Split(*buildTags, ",")
@@ -129,41 +181,34 @@ func main() {
 	}
 
 	// Parse the package once.
-	var dir string
-	g := Generator{
-		trimPrefix:  *trimPrefix,
-		lineComment: *lineComment,
-		bitFlags:    *bitFlags,
+	g := Generator{}
+	if err := g.parsePackage(args, tags); err != nil {
+		log.Fatal(err)
 	}
-	// TODO(suzmue): accept other patterns for packages (directories, list of files, import paths, etc).
-	if len(args) == 1 && isDirectory(args[0]) {
-		dir = args[0]
-	} else {
-		if len(tags) != 0 {
-			log.Fatal("-tags option applies only to directories, not when files are specified")
-		}
-		dir = filepath.Dir(args[0])
-	}
-
-	g.parsePackage(args, tags)
 
 	// Print the header and package clause.
-	g.generateStart()
-	for _, typeName := range types {
-		g.generate(typeName)
+	g.generateStart(hasFlags)
+	for _, typeOpt := range types {
+		g.generate(typeOpt.name, typeOpt.kind, typeOpt.trimPrefix, typeOpt.lineComment)
 	}
 
 	// Format the output.
 	src := g.format()
 
-	// Write to file.
-	outputName := *output
-	if outputName == "" {
-		baseName := fmt.Sprintf("%s_string.go", types[0])
-		outputName = filepath.Join(dir, strings.ToLower(baseName))
-	}
-	err := ioutil.WriteFile(outputName, src, 0644)
+	// Write to the given output file.
+	err := os.WriteFile(outputName, src, 0644)
 	if err != nil {
-		log.Fatalf("writing output: %s", err)
+		return fmt.Errorf("writing output: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "wrote output to %s\n", outputName)
+
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "error: %s\n", err)
+		os.Exit(2)
 	}
 }

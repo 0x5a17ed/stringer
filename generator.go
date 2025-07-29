@@ -15,6 +15,13 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+type Kind int
+
+const (
+	Flag Kind = iota
+	Enum
+)
+
 // isPow2 returns true of v is a power-of-two value.
 func isPow2(x uint64) bool {
 	return (x & (x - 1)) == 0
@@ -43,25 +50,23 @@ type File struct {
 	typeName string  // Name of the constant type.
 	values   []Value // Accumulator for constant values of that type.
 
-	trimPrefix  string
-	lineComment bool
+	trimPrefix  string // prefix to be trimmed from value names.
+	lineComment bool   // use line comment as flag name.
 }
 
 type Package struct {
 	name  string
+	fset  *token.FileSet
 	defs  map[*ast.Ident]types.Object
 	files []*File
+	dir   string
 }
 
 // Generator holds the state of the analysis. Primarily used to buffer
 // the output for format.Source.
 type Generator struct {
-	buf bytes.Buffer // Accumulated output.
-	pkg *Package     // Package we are scanning.
-
-	trimPrefix  string
-	lineComment bool
-	bitFlags    bool
+	buf  bytes.Buffer // Accumulated output.
+	pkgs []*Package
 }
 
 func (g *Generator) Printf(format string, args ...interface{}) {
@@ -70,7 +75,7 @@ func (g *Generator) Printf(format string, args ...interface{}) {
 
 // parsePackage analyzes the single package constructed from the patterns and tags.
 // parsePackage exits if there is an error.
-func (g *Generator) parsePackage(patterns []string, tags []string) {
+func (g *Generator) parsePackage(patterns []string, tags []string) error {
 	cfg := &packages.Config{
 		Mode: packages.NeedSyntax | packages.NeedTypesInfo |
 			packages.NeedTypes | packages.NeedTypesSizes |
@@ -83,39 +88,45 @@ func (g *Generator) parsePackage(patterns []string, tags []string) {
 	}
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
-		log.Fatal(err)
-	}
-	if len(pkgs) != 1 {
-		log.Fatalf("error: %d packages found", len(pkgs))
-	}
-	g.addPackage(pkgs[0])
-}
-
-// addPackage adds a type checked Package and its syntax files to the generator.
-func (g *Generator) addPackage(pkg *packages.Package) {
-	g.pkg = &Package{
-		name:  pkg.Name,
-		defs:  pkg.TypesInfo.Defs,
-		files: make([]*File, len(pkg.Syntax)),
+		return err
 	}
 
-	for i, file := range pkg.Syntax {
-		g.pkg.files[i] = &File{
-			file:        file,
-			pkg:         g.pkg,
-			trimPrefix:  g.trimPrefix,
-			lineComment: g.lineComment,
+	if len(pkgs) == 0 {
+		log.Fatalf("error: no packages matching %v", strings.Join(patterns, " "))
+	}
+
+	out := make([]*Package, len(pkgs))
+	for i, pkg := range pkgs {
+
+		p := &Package{
+			name:  pkg.Name,
+			dir:   pkg.Dir,
+			fset:  pkg.Fset,
+			defs:  pkg.TypesInfo.Defs,
+			files: make([]*File, len(pkg.Syntax)),
 		}
+
+		for j, file := range pkg.Syntax {
+			p.files[j] = &File{
+				file: file,
+				pkg:  p,
+			}
+		}
+
+		out[i] = p
 	}
+	g.pkgs = out
+
+	return nil
 }
 
 // generateStart produces the start of a Go source code file.
-func (g *Generator) generateStart() {
-	g.Printf("package %s", g.pkg.name)
+func (g *Generator) generateStart(usesFlags bool) {
+	g.Printf("package %s", g.pkgs[0].name)
 	g.Printf("\n")
 	g.Printf("import (\n")
 
-	if g.bitFlags {
+	if usesFlags {
 		g.Printf("	\"math/bits\"\n")
 	}
 	g.Printf("	\"strconv\"\n")
@@ -124,12 +135,14 @@ func (g *Generator) generateStart() {
 }
 
 // generate produces the String method for the named type.
-func (g *Generator) generate(typeName string) {
+func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, lineComment bool) {
 	values := make([]Value, 0, 100)
-	for _, file := range g.pkg.files {
+	for _, file := range g.pkgs[0].files {
 		// Set the state for this run of the walker.
-		file.typeName = typeName
 		file.values = nil
+		file.typeName = typeName
+		file.trimPrefix = trimPrefix
+		file.lineComment = lineComment
 		if file.file != nil {
 			ast.Inspect(file.file, file.genDecl)
 			values = append(values, file.values...)
@@ -149,37 +162,28 @@ func (g *Generator) generate(typeName string) {
 		g.Printf("\t_ = x[%s - %s]\n", v.originalName, v.str)
 	}
 	g.Printf("}\n")
-	runs := splitIntoRuns(values)
-	// The decision of which pattern to use depends on the number of
-	// runs in the numbers. If there's only one, it's easy. For more than
-	// one, there's a tradeoff between complexity and size of the data
-	// and code vs. the simplicity of a map. A map takes more space,
-	// but so does the code. The decision here (crossover at 10) is
-	// arbitrary, but considers that for large numbers of runs the cost
-	// of the linear scan in the switch might become important, and
-	// rather than use yet another algorithm such as binary search,
-	// we punt and use a map. In any case, the likelihood of a map
-	// being necessary for any realistic example other than bitmasks
-	// is very low. And bitmasks probably deserve their own analysis,
-	// to be done some other day.
+	runs := splitIntoRuns(values, kind)
+
 	switch {
-	case len(runs) == 1:
+	case len(runs) == 1 && kind == Enum:
 		g.buildOneRun(runs, typeName)
-	case len(runs) <= 10:
-		if g.bitFlags {
-			g.buildMultipleRunsBitflags(runs, typeName)
+	case len(runs) <= 8:
+		if kind == Flag {
+			g.buildFlagsMultipleRuns(typeName, runs)
+			g.buildFlagStringMethod(typeName)
 		} else {
 			g.buildMultipleRuns(runs, typeName)
 		}
 	default:
-		g.buildMap(runs, typeName)
+		g.buildMap(typeName, kind, runs)
+		g.buildFlagStringMethod(typeName)
 	}
 }
 
 // splitIntoRuns breaks the values into runs of contiguous sequences.
 // For example, given 1,2,3,5,6,7 it returns {1,2,3},{5,6,7}.
 // The input slice is known to be non-empty.
-func splitIntoRuns(values []Value) [][]Value {
+func splitIntoRuns(values []Value, kind Kind) [][]Value {
 	// We use stable sort so the lexically first name is chosen for equal elements.
 	sort.Stable(byValue(values))
 	// Remove duplicates. Stable sort has put the one we want to print first,
@@ -199,8 +203,14 @@ func splitIntoRuns(values []Value) [][]Value {
 	for len(values) > 0 {
 		// One contiguous sequence per outer loop.
 		i := 1
-		for i < len(values) && values[i].value == values[i-1].value+1 {
-			i++
+		if kind == Flag {
+			for i < len(values) && (values[i-1].value == 0 || values[i].value == values[i-1].value<<1) {
+				i++
+			}
+		} else {
+			for i < len(values) && values[i].value == values[i-1].value+1 {
+				i++
+			}
 		}
 		runs = append(runs, values[:i])
 		values = values[i:]
@@ -331,6 +341,9 @@ func (f *File) genDecl(node ast.Node) bool {
 			if !isInt {
 				u64 = uint64(i64)
 			}
+			if !isPow2(u64) {
+				continue
+			}
 			v := Value{
 				originalName: name.Name,
 				value:        u64,
@@ -414,24 +427,6 @@ func (g *Generator) declareNameVars(runs [][]Value, typeName string, suffix stri
 	g.Printf("\"\n")
 }
 
-// buildOneRun generates the variables and String method for a single run of contiguous values.
-func (g *Generator) buildOneRun(runs [][]Value, typeName string) {
-	values := runs[0]
-	g.Printf("\n")
-	g.declareIndexAndNameVar(values, typeName)
-	// The generated code is simple enough to write as a Printf format.
-	lessThanZero := ""
-	if values[0].signed {
-		lessThanZero = "i < 0 || "
-	}
-
-	if values[0].value == 0 { // Signed or unsigned, 0 is still 0.
-		g.Printf(stringOneRun, typeName, usize(len(values)), lessThanZero)
-	} else {
-		g.Printf(stringOneRunWithOffset, typeName, values[0].String(), usize(len(values)), lessThanZero)
-	}
-}
-
 // Arguments to format are:
 //
 //	[1]: type name
@@ -460,85 +455,109 @@ const stringOneRunWithOffset = `func (i %[1]s) String() string {
 }
 `
 
-// buildMultipleRunsBitflags generates the variables and String method for multiple runs of contiguous values.
+// buildOneRun generates the variables and String method for a single run of contiguous values.
+func (g *Generator) buildOneRun(runs [][]Value, typeName string) {
+	values := runs[0]
+	g.Printf("\n")
+	g.declareIndexAndNameVar(values, typeName)
+	// The generated code is simple enough to write as a Printf format.
+	lessThanZero := ""
+	if values[0].signed {
+		lessThanZero = "i < 0 || "
+	}
+
+	if values[0].value == 0 { // Signed or unsigned, 0 is still 0.
+		g.Printf(stringOneRun, typeName, usize(len(values)), lessThanZero)
+	} else {
+		g.Printf(stringOneRunWithOffset, typeName, values[0].String(), usize(len(values)), lessThanZero)
+	}
+}
+
+// buildFlagsMultipleRuns generates the variables and String method for multiple runs of contiguous values.
 // For this pattern, a single Printf format won't do.
-func (g *Generator) buildMultipleRunsBitflags(runs [][]Value, typeName string) {
+func (g *Generator) buildFlagsMultipleRuns(typeName string, runs [][]Value) {
 	g.Printf("\n")
 	g.declareIndexAndNameVars(runs, typeName)
-	g.Printf("func (i %s) String() string {\n", typeName)
 
-	g.Printf("\tswitch {\n")
-	for i, values := range runs {
-		if len(values) == 1 {
-			if isPow2(values[0].value) {
-				g.Printf("\tcase i == %s:\n", &values[0])
-				g.Printf("\t\treturn _%s_name_%d\n", typeName, i)
-			}
-			continue
-		}
-
-		if values[0].value == 0 && !values[0].signed {
-			// For an unsigned lower bound of 0, "0 <= i" would be redundant.
-			g.Printf("\tcase i <= %s:\n", &values[len(values)-1])
-		} else {
-			g.Printf("\tcase %s <= i && i <= %s:\n", &values[0], &values[len(values)-1])
-		}
-
-		if values[0].value != 0 {
-			g.Printf("\t\ti -= %s\n", &values[0])
-		}
-
-		g.Printf("\t\treturn _%s_name_%d[_%s_index_%d[i]:_%s_index_%d[i+1]]\n",
-			typeName, i, typeName, i, typeName, i)
-	}
-	g.Printf("default:\n")
-
-	g.Printf("	out := make([]string, 0, bits.OnesCount64(uint64(i)))\n\n")
+	g.buildFlagActiveFlagsMethodStart(typeName, runs)
 
 	for i, values := range runs {
 		if len(values) == 1 {
-			if isPow2(values[0].value) {
-				g.Printf("if i&%s != 0 {\n", &values[0])
-				g.Printf("	out = append(out, _%s_name_%d)\n", typeName, i)
-				g.Printf("	i &^= %s\n", &values[0])
-				g.Printf("}\n")
+			if values[0].value == 0 {
+				continue
 			}
+
+			g.Printf("if i&%s != 0 {\n", &values[0])
+			g.Printf("	i, s = i &^ %s, append(s, _%s_name_%d)\n", &values[0], typeName, i)
+			g.Printf("}\n")
+
 			continue
 		}
 
-		var haveZero bool
-		for _, v := range values {
-			value := v.value
-
+		for j, v := range values {
 			if v.value == 0 {
-				haveZero = true
 				continue
-			}
-
-			if !isPow2(v.value) {
-				continue
-			}
-
-			if !haveZero {
-				value -= 1
 			}
 
 			g.Printf("if i&%s != 0 {\n", &v)
-			g.Printf("	out = append(out, _%[1]s_name_%[2]d[_%[1]s_index_%[2]d[%[3]d]:_%[1]s_index_%[2]d[%[4]d]])\n",
-				typeName, i, value, value+1)
-			g.Printf("	i &^= %s\n", &v)
+			g.Printf("	i, s = i&^ %[5]s, append(s, _%[1]s_name_%[2]d[_%[1]s_index_%[2]d[%[3]d]:_%[1]s_index_%[2]d[%[4]d]])\n",
+				typeName, i, j, j+1, &v)
 			g.Printf("}\n")
 		}
 	}
 
-	g.Printf("	if i != 0 {\n")
-	g.Printf("		out = append(out, \"%s(\" + strconv.FormatInt(int64(i), 10) + \")\")", typeName)
-	g.Printf("	}\n")
-	g.Printf("	if len(out) > 0 {\n")
-	g.Printf("		return strings.Join(out, \", \")\n")
-	g.Printf("	}\n")
-	g.Printf("	return \"%s(\" + strconv.FormatInt(int64(i), 10) + \")\"", typeName)
-	g.Printf("\t}\n}\n")
+	g.buildFlagActiveFlagsMethodEnd(typeName)
+}
+
+func (g *Generator) buildFlagStringMethod(typeName string) {
+	g.Printf("\n")
+	g.Printf("func (i %s) String() string {\n", typeName)
+	g.Printf("	return strings.Join(i.ActiveFlags(), \"+\")\n")
+	g.Printf("}\n")
+}
+
+func (g *Generator) buildFlagActiveFlagsMethodStart(typeName string, runs [][]Value) {
+	g.Printf("func (i %s) ActiveFlags() []string {\n", typeName)
+
+	// Check if any of the runs contains a zero value and return it.
+outer:
+	for i, values := range runs {
+		// Shortcut for single value runs that contains the 0 value.
+		if len(values) == 1 && values[0].value == 0 {
+			g.Printf("if i == 0 {\n")
+			g.Printf("	return []string{_%s_name_%d}\n", typeName, i)
+			g.Printf("}\n\n")
+			break
+		}
+
+		for j, v := range values {
+			if v.value == 0 {
+				g.Printf("if i == 0 {\n")
+				g.Printf("return []string{_%[1]s_name_%[2]d[_%[1]s_index_%[2]d[%[3]d]:_%[1]s_index_%[2]d[%[4]d]]}\n",
+					typeName,
+					i,
+					j,
+					j+1)
+				g.Printf("}\n\n")
+
+				break outer
+			}
+		}
+	}
+
+	g.Printf("s := make([]string, 0, bits.OnesCount64(uint64(i)))\n")
+}
+
+const stringActiveFlagsEnd = `
+	if i != 0 {
+		s = append(s, "%[1]s(" + strconv.FormatInt(int64(i), 10) + ")")
+	}
+	return s
+}
+`
+
+func (g *Generator) buildFlagActiveFlagsMethodEnd(typeName string) {
+	g.Printf(stringActiveFlagsEnd[1:], typeName)
 }
 
 // buildMultipleRuns generates the variables and String method for multiple runs of contiguous values.
@@ -582,26 +601,20 @@ const stringMap = `func (i %[1]s) String() string {
 `
 
 // Argument to format is the type name.
-const stringMapBitflags = `func (i %[1]s) String() string {
-	out := make([]string, 0, bits.OnesCount64(uint64(i)))
-	for k, v := range _%[1]s_map {
+const stringFlagMap = `for k, v := range _%[1]s_map {
 		if k&i != 0 {
-			out = append(out, v)
+			i, s = i&^k, append(s, v)
 		}
 	}
-
-	if len(out) > 0 {
-		return strings.Join(out, ", ")
-	}
-	
-	return "%[1]s(" + strconv.FormatInt(int64(i), 10) + ")"
-}`
+`
 
 // buildMap handles the case where the space is so sparse a map is a reasonable fallback.
 // It's a rare situation but has simple code.
-func (g *Generator) buildMap(runs [][]Value, typeName string) {
+func (g *Generator) buildMap(typeName string, kind Kind, runs [][]Value) {
 	g.Printf("\n")
 	g.declareNameVars(runs, typeName, "")
+
+	// Generate the flag to name mapping.
 	g.Printf("\nvar _%s_map = map[%s]string{\n", typeName, typeName)
 	n := 0
 	for _, values := range runs {
@@ -612,9 +625,27 @@ func (g *Generator) buildMap(runs [][]Value, typeName string) {
 	}
 	g.Printf("}\n\n")
 
-	if g.bitFlags {
-		g.Printf(stringMapBitflags, typeName)
+	if kind == Flag {
+		g.buildFlagActiveFlagsMethodStart(typeName, runs)
+		g.Printf(stringFlagMap, typeName)
+		g.buildFlagActiveFlagsMethodEnd(typeName)
 	} else {
 		g.Printf(stringMap, typeName)
 	}
+}
+
+func (g *Generator) findTypeDeclarationFile(typeName string) (string, error) {
+	for _, pkg := range g.pkgs {
+		for ident, obj := range pkg.defs {
+			if ident.Name == typeName {
+				if _, ok := obj.(*types.TypeName); ok {
+					pos := obj.Pos()
+					position := pkg.fset.Position(pos)
+					return position.Filename, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("type %q not found in loaded packages", typeName)
 }
