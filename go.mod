@@ -1,4 +1,4 @@
-module github.com/hexaflex/stringer
+module github.com/0x5a17ed/stringer
 
 go 1.24.0
 
