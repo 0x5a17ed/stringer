@@ -132,7 +132,9 @@ func (g *Generator) generateStart(usesFlags bool) {
 		g.Printf("	\"math/bits\"\n")
 	}
 	g.Printf("	\"strconv\"\n")
-	g.Printf("	\"strings\"\n")
+	if usesFlags {
+		g.Printf("	\"strings\"\n")
+	}
 	g.Printf(")\n\n")
 }
 
