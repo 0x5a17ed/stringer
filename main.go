@@ -112,10 +112,8 @@ func parseOption(kind Kind, inp string) (*typeOptions, error) {
 }
 
 var (
-	output      = flag.String("output", "", "output file name; default srcdir/<type>_string.go")
-	trimPrefix  = flag.Bool("trimPrefix", false, "trim the type name `prefix` from the generated constant names")
-	lineComment = flag.Bool("lineComment", false, "use line comment text as printed text when present")
-	buildTags   = flag.String("tags", "", "comma-separated list of build tags to apply")
+	output    = flag.String("output", "", "output file name; default srcdir/<type>_string.go")
+	buildTags = flag.String("tags", "", "comma-separated list of build tags to apply")
 
 	enumTypesStrFlag = flag.String("enums", "", "comma-separated list of enum types")
 	flagTypesStrFlag = flag.String("flags", "", "comma-separated list of flag types")
