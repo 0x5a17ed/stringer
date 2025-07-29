@@ -46,12 +46,14 @@ func usize(n int) int {
 type File struct {
 	pkg  *Package  // Package to which this file belongs.
 	file *ast.File // Parsed AST.
-	// These fields are reset for each type being generated.
-	typeName string  // Name of the constant type.
-	values   []Value // Accumulator for constant values of that type.
 
-	trimPrefix  string // prefix to be trimmed from value names.
-	lineComment bool   // use line comment as flag name.
+	// These fields are reset for each type being generated.
+	kind     Kind   // Type of the constant type, either enum or flag.
+	typeName string // Name of the constant type we're currently looking for.
+
+	values      []Value // Accumulator for constant values of that type.
+	trimPrefix  string  // prefix to be trimmed from value names.
+	lineComment bool    // use line comment as flag name.
 }
 
 type Package struct {
@@ -143,6 +145,7 @@ func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, line
 			// Set the state for this run of the walker.
 			file.values = nil
 
+			file.kind = kind
 			file.typeName = typeName
 			file.trimPrefix = trimPrefix
 			file.lineComment = lineComment
@@ -345,7 +348,7 @@ func (f *File) genDecl(node ast.Node) bool {
 			if !isInt {
 				u64 = uint64(i64)
 			}
-			if !isPow2(u64) {
+			if !isPow2(u64) && f.kind == Flag {
 				continue
 			}
 			v := Value{
