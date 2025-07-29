@@ -137,15 +137,19 @@ func (g *Generator) generateStart(usesFlags bool) {
 // generate produces the String method for the named type.
 func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, lineComment bool) {
 	values := make([]Value, 0, 100)
-	for _, file := range g.pkgs[0].files {
-		// Set the state for this run of the walker.
-		file.values = nil
-		file.typeName = typeName
-		file.trimPrefix = trimPrefix
-		file.lineComment = lineComment
-		if file.file != nil {
-			ast.Inspect(file.file, file.genDecl)
-			values = append(values, file.values...)
+
+	for _, pkg := range g.pkgs {
+		for _, file := range pkg.files {
+			// Set the state for this run of the walker.
+			file.values = nil
+
+			file.typeName = typeName
+			file.trimPrefix = trimPrefix
+			file.lineComment = lineComment
+			if file.file != nil {
+				ast.Inspect(file.file, file.genDecl)
+				values = append(values, file.values...)
+			}
 		}
 	}
 
