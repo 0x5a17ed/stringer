@@ -105,19 +105,27 @@ func parseOption(kind Kind, inp string) (*typeOptions, error) {
 				return nil, fmt.Errorf("unknown option %q", k)
 			}
 		}
-
 	}
 
 	return out, nil
 }
 
-var (
-	output    = flag.String("output", "", "output file name; default srcdir/<type>_string.go")
-	buildTags = flag.String("tags", "", "comma-separated list of build tags to apply")
+func processTypeOptions(opts []typeOptions, kind Kind, inp string) ([]typeOptions, error) {
+	for _, s := range strings.Split(inp, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
 
-	enumTypesStrFlag = flag.String("enums", "", "comma-separated list of enum types")
-	flagTypesStrFlag = flag.String("flags", "", "comma-separated list of flag types")
-)
+		typeOpt, err := parseOption(kind, s)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, *typeOpt)
+	}
+
+	return opts, nil
+}
 
 // Usage is a replacement usage function for the flags package.
 func Usage() {
@@ -130,9 +138,18 @@ flags:
 	flag.PrintDefaults()
 }
 
-func run() error {
+func run() (err error) {
 	log.SetFlags(0)
 	log.SetPrefix("stringer: ")
+
+	var (
+		output    = flag.String("output", "", "output file name; default srcdir/<type>_string.go")
+		buildTags = flag.String("tags", "", "comma-separated list of build tags to apply")
+
+		enumTypesStrFlag = flag.String("enums", "", "comma-separated list of enum types")
+		flagTypesStrFlag = flag.String("flags", "", "comma-separated list of flag types")
+	)
+
 	flag.Usage = Usage
 	flag.Parse()
 
@@ -142,23 +159,17 @@ func run() error {
 		os.Exit(2)
 	}
 
-	var hasFlags bool
 	var types []typeOptions
-	for _, inp := range strings.Split(*enumTypesStrFlag, ",") {
-		typeOpt, err := parseOption(Enum, inp)
-		if err != nil {
-			return err
-		}
-		types = append(types, *typeOpt)
+	types, err = processTypeOptions(types, Flag, *flagTypesStrFlag)
+	if err != nil {
+		return err
 	}
-	for _, inp := range strings.Split(*flagTypesStrFlag, ",") {
-		typeOpt, err := parseOption(Flag, inp)
-		if err != nil {
-			return err
-		}
-		types = append(types, *typeOpt)
 
-		hasFlags = true
+	hasFlags := len(types) > 0
+
+	types, err = processTypeOptions(types, Enum, *enumTypesStrFlag)
+	if err != nil {
+		return err
 	}
 
 	if len(types) == 0 {
@@ -194,8 +205,7 @@ func run() error {
 	src := g.format()
 
 	// Write to the given output file.
-	err := os.WriteFile(outputName, src, 0644)
-	if err != nil {
+	if err := os.WriteFile(outputName, src, 0644); err != nil {
 		return fmt.Errorf("writing output: %w", err)
 	}
 
