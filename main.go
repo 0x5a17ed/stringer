@@ -81,7 +81,7 @@ type typeOptions struct {
 	trimPrefix  string
 	lineComment bool
 
-	setterGetter bool
+	getterSetter bool
 }
 
 func parseOption(kind Kind, inp string) (*typeOptions, error) {
@@ -103,8 +103,8 @@ func parseOption(kind Kind, inp string) (*typeOptions, error) {
 				out.trimPrefix = v
 			case "trimType":
 				out.trimPrefix = name
-			case "setterGetter":
-				out.setterGetter = true
+			case "getterSetter":
+				out.getterSetter = true
 			default:
 				return nil, fmt.Errorf("unknown option %q", k)
 			}
@@ -202,7 +202,7 @@ func run() (err error) {
 	// Print the header and package clause.
 	g.generateStart(hasFlags)
 	for _, typeOpt := range types {
-		g.generate(typeOpt.name, typeOpt.kind, typeOpt.trimPrefix, typeOpt.lineComment, typeOpt.setterGetter)
+		g.generate(typeOpt.name, typeOpt.kind, typeOpt.trimPrefix, typeOpt.lineComment, typeOpt.getterSetter)
 	}
 
 	// Format the output.

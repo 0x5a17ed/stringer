@@ -139,7 +139,7 @@ func (g *Generator) generateStart(usesFlags bool) {
 }
 
 // generate produces the String method for the named type.
-func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, lineComment bool, setterGetter bool) {
+func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, lineComment bool, getterSetter bool) {
 	values := make([]Value, 0, 100)
 
 	for _, pkg := range g.pkgs {
@@ -188,7 +188,7 @@ func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, line
 		g.buildFlagStringMethod(typeName)
 	}
 
-	if kind == Flag && setterGetter {
+	if kind == Flag && getterSetter {
 		g.buildFlagGetterSetters(typeName, values)
 	}
 }
