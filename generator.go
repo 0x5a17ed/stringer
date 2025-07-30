@@ -139,7 +139,7 @@ func (g *Generator) generateStart(usesFlags bool) {
 }
 
 // generate produces the String method for the named type.
-func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, lineComment bool) {
+func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, lineComment bool, setterGetter bool) {
 	values := make([]Value, 0, 100)
 
 	for _, pkg := range g.pkgs {
@@ -186,6 +186,10 @@ func (g *Generator) generate(typeName string, kind Kind, trimPrefix string, line
 	default:
 		g.buildMap(typeName, kind, runs)
 		g.buildFlagStringMethod(typeName)
+	}
+
+	if kind == Flag && setterGetter {
+		g.buildFlagGetterSetters(typeName, values)
 	}
 }
 
@@ -640,6 +644,18 @@ func (g *Generator) buildMap(typeName string, kind Kind, runs [][]Value) {
 		g.buildFlagActiveFlagsMethodEnd(typeName)
 	} else {
 		g.Printf(stringMap, typeName)
+	}
+}
+
+const stringFlagGetterSetters = `
+func (i %[1]s) %[2]s() bool {return i&%[3]s == %[3]s}
+func (i %[1]s) Set%[2]s() %[1]s {return i|%[3]s}
+func (i %[1]s) Clear%[2]s() %[1]s {return i & ^%[3]s}
+`
+
+func (g *Generator) buildFlagGetterSetters(typeName string, values []Value) {
+	for _, value := range values {
+		g.Printf(stringFlagGetterSetters, typeName, value.name, value.originalName)
 	}
 }
 

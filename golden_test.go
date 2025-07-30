@@ -11,10 +11,11 @@ import (
 
 func TestGolden(t *testing.T) {
 	tt := []struct {
-		name        string
-		trimPrefix  string
-		lineComment bool
-		bitFlags    bool
+		name         string
+		trimPrefix   string
+		lineComment  bool
+		bitFlags     bool
+		getterSetter bool
 	}{
 		{name: "day", bitFlags: true},
 		{name: "gap", bitFlags: true},
@@ -22,6 +23,7 @@ func TestGolden(t *testing.T) {
 		{name: "compound", bitFlags: true},
 		{name: "multirun", bitFlags: true},
 		{name: "trimmed", bitFlags: true, trimPrefix: "Trimmed"},
+		{name: "getterSetter", bitFlags: true, trimPrefix: "GetterSetter", getterSetter: true},
 	}
 
 	dir := t.TempDir()
@@ -55,7 +57,7 @@ func TestGolden(t *testing.T) {
 			if tc.bitFlags {
 				k = Flag
 			}
-			g.generate(tokens[3], k, tc.trimPrefix, tc.lineComment)
+			g.generate(tokens[3], k, tc.trimPrefix, tc.lineComment, tc.getterSetter)
 			got := string(g.format())
 
 			golden.Assert(t, got, tc.name+".out.go")
