@@ -655,6 +655,11 @@ func (i %[1]s) Clear%[2]s() %[1]s {return i & ^%[3]s}
 
 func (g *Generator) buildFlagGetterSetters(typeName string, values []Value) {
 	for _, value := range values {
+		if value.value == 0 {
+			g.Printf("\nfunc (i %[1]s) %[2]s() bool {return i == 0}\n", typeName, value.name)
+
+			continue
+		}
 		g.Printf(stringFlagGetterSetters, typeName, value.name, value.originalName)
 	}
 }
